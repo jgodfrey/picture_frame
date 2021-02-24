@@ -3,6 +3,7 @@ from ninepatch import Ninepatch
 import numpy as np
 import random
 import logging
+import time
 
 class MatImage:
 
@@ -277,12 +278,12 @@ class MatImage:
 
 
     def __get_outer_mat_color(self, image):
-        k = Kmeans(size=20)
+        k = KmeansNp(k=3, max_iterations=10, size=100)
         colors = k.run(image)
-        return self.__get_least_gray_color(colors)
+        return tuple(colors[0])
 
 
-    def __get_least_gray_color(self, colors):
+    """def __get_least_gray_color(self, colors):
         dist = -1
         color = colors[0]
         for this_color in colors:
@@ -290,7 +291,7 @@ class MatImage:
             if this_dist > dist:
                 dist = this_dist
                 color = this_color
-        return tuple(map(int, color))
+        return tuple(map(int, color))"""
 
 
     def __get_darker_shade(self, rgb_color, fractional_percent = 0.5):
@@ -385,7 +386,7 @@ class MatImage:
 
 # region Automatic Color Selection ----
 
-class Cluster(object):
+"""class Cluster(object):
 
     def __init__(self):
         self.pixels = []
@@ -424,7 +425,7 @@ class Kmeans(object):
             image = image.convert('RGB') # JAG, some numpy manipulations here don't expect an Alpha channel
         self.image = image
 
-        self.pixels = np.array(image.getdata(), dtype=np.uint8)
+        self.pixels = np.array(image.getdata(), dtype=np.float)
 
         self.clusters = [None for i in range(self.k)]
         self.oldClusters = None
@@ -436,6 +437,7 @@ class Kmeans(object):
             self.clusters[idx].centroid = randomPixels[idx]
 
         iterations = 0
+        self.start_clusters = [c.centroid for c in self.clusters] # make copy
 
         while self.shouldExit(iterations) is False:
 
@@ -482,9 +484,54 @@ class Kmeans(object):
         if iterations <= self.max_iterations:
             return False
 
-        return True
+        return True"""
 
-# endregion Automatic Color Selection ----
+class KmeansNp:
+    def __init__(self, k=3, max_iterations=5, min_distance=5.0, size=200):
+        self.k = k
+        self.max_iterations = max_iterations
+        self.min_distance = min_distance
+        self.size = (size, size)
+
+    def run(self, image, start_clusters=None):
+        image = image.copy()
+        image.thumbnail(self.size)
+        im = np.array(image, dtype=np.float)[:,:,:3].reshape(-1, 3) #NB need to use floats to avoid coercing to uint8 scrambling subtractions
+        n = len(im)
+        if start_clusters is None:
+            centroids = im[np.random.choice(np.arange(n), self.k)]
+        else:
+            centroids = np.array(start_clusters, dtype=np.float)
+        old_centroids = centroids.copy()
+        for i in range(self.max_iterations):
+            im.shape = (1, n, 3) # add dimension to allow broadcasting
+            centroids.shape = (self.k, 1, 3) # ditto
+            dists = (((im - centroids) ** 2).sum(axis=2)) ** 0.5 # euclidean distance - manhattan might be fine and faster
+            ix = np.argmin(dists, axis=0) # indices of nearest centroid for each pixel
+            im.shape = (n, 3) # reduce dimensions for mean
+            centroids.shape = (self.k, 3) # ditto
+            counts = np.unique(ix, return_counts=True)[1] # count the number of each index
+            to_keep = [] # discard any centroids with no pixels nearest to them
+            for j in range(self.k): # write back average location of all nearest pixels
+                j_pixels = im[ix == j] # view into im where ix points to centroid j
+                if len(j_pixels) > 0: # error if try to get mean zero length array TODO remove groups with few pixels?
+                    centroids[j] = j_pixels.mean(axis=0)
+                    to_keep.append(j)
+            if len(to_keep) < len(centroids): # this will be relatively rare
+                for j in to_keep[::-1]: # delete in reverse order of index
+                    centroids = np.delete(centroids, j, axis=0)
+                    old_centroids = np.delete(old_centroids, j, axis=0)
+            movement = ((((centroids - old_centroids) ** 2).sum(axis=1)) ** 0.5).max()
+            if movement < self.min_distance:
+                break
+            old_centroids = centroids.copy()
+
+        c_max, c_min = centroids.max(axis=1), centroids.min(axis=1) # max, min for each centroid
+        #c_lum = 0.5 * (c_max + c_min)
+        #c_sat = (c_max - c_min) / (255.0 - np.abs(c_lum * 2.0 - 255.0)) # should check for lum == 255
+        c_sat = c_max - c_min # value used previously includes element of lum TODO bias more to lighter using (1.5 * c_max - c_min)
+        ix_order = np.argsort(c_sat)[::-1] # indices to sorted values - reversed
+        return centroids[ix_order].astype(np.uint8)
 
 if __name__ == "__main__":
 
